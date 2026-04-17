@@ -1,7 +1,17 @@
 import { CaseStudiesSection } from '../components/home';
 import { PageHero, PageTransition } from '../components/common';
+import { useSearchParams } from 'react-router-dom';
 
 function Publications() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const showDeletedPublicationAlert = searchParams.get('publicationDeleted') === '1';
+
+  const dismissDeletedPublicationAlert = () => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('publicationDeleted');
+    setSearchParams(nextParams, { replace: true });
+  };
+
   return (
     <PageTransition>
       <div className="Publications min-h-screen bg-gradient-to-b from-slate-50/90 via-white to-primary-soft/25">
@@ -14,6 +24,26 @@ function Publications() {
             secondaryCta={{ label: 'Contact team', href: '/contact' }}
             className="mb-6 sm:mb-8"
           />
+          {showDeletedPublicationAlert ? (
+            <div
+              className="mb-6 rounded-2xl border border-red-200 bg-red-50 p-4 sm:p-5 text-red-800 shadow-soft"
+              role="alert"
+              aria-live="polite"
+            >
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <p className="text-sm sm:text-base font-medium">
+                  This publication was deleted by an editor and is no longer available.
+                </p>
+                <button
+                  type="button"
+                  onClick={dismissDeletedPublicationAlert}
+                  className="self-start rounded-lg border border-red-200 px-3 py-1.5 text-xs sm:text-sm font-semibold text-red-700 hover:bg-red-100 transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-5 mb-10 sm:mb-12">
             <div className="rounded-2xl border border-primary/15 bg-white/90 p-5 shadow-soft text-center">

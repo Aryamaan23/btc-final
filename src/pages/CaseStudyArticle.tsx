@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Button, PageTransition } from '../components/common';
 import { fetchCaseStudies } from '../services/caseStudyService';
 import type { CaseStudy } from '../types';
@@ -16,6 +16,7 @@ function formatDate(value: string): string {
 
 function CaseStudyArticle() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [article, setArticle] = useState<CaseStudy | null>(null);
@@ -40,7 +41,7 @@ function CaseStudyArticle() {
 
       const matched = result.caseStudies.find((item) => item.id === id);
       if (!matched) {
-        setError('Case study not found.');
+        navigate('/publications?publicationDeleted=1', { replace: true });
         setLoading(false);
         return;
       }
@@ -50,7 +51,7 @@ function CaseStudyArticle() {
     };
 
     void loadArticle();
-  }, [id]);
+  }, [id, navigate]);
 
   return (
     <PageTransition>
