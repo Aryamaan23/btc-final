@@ -71,6 +71,13 @@ The application follows a component-based architecture with:
 - Performance optimization (lazy loading, code splitting)
 - Type-safe development with TypeScript
 
+## Documentation
+
+- Feature documentation: `FEATURES_OVERVIEW.md`
+- Local setup: `LOCAL_SETUP_GUIDE.md`
+- Contact/API setup: `CONTACT_FORM_SETUP.md` and `api/README.md`
+- Google Drive integration notes: `GOOGLE_DRIVE_INTEGRATION_GUIDE.md`
+
 ## License
 
 Private - Beyond the Classroom
