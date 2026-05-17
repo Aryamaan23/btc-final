@@ -1,4 +1,4 @@
-import { del, list, put } from '@vercel/blob';
+import { del, head, list, put } from '@vercel/blob';
 
 export type CaseStudyRecord = {
   id: string;
@@ -29,8 +29,14 @@ const META_PREFIX = 'case-studies/meta/';
 const inMemoryCaseStudies: CaseStudyRecord[] = [];
 const inMemoryFiles = new Map<string, InMemoryStoredFile>();
 
+function blobToken(): string | undefined {
+  const raw = process.env.BLOB_READ_WRITE_TOKEN;
+  if (!raw) return undefined;
+  return raw.trim().replace(/^["']|["']$/g, '');
+}
+
 export function useBlobStorage(): boolean {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim());
+  return Boolean(blobToken());
 }
 
 export function isProductionRuntime(): boolean {
@@ -38,13 +44,23 @@ export function isProductionRuntime(): boolean {
 }
 
 export const BLOB_NOT_CONFIGURED_ERROR =
-  'File storage is not configured. In the Vercel dashboard open Storage → Create Blob store → connect to this project (adds BLOB_READ_WRITE_TOKEN automatically), then redeploy.';
+  'File storage is not configured. In Vercel → Storage → create a Blob store and connect it to this project (adds BLOB_READ_WRITE_TOKEN), then redeploy.';
 
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-/** API-facing URLs (proxy downloads). Stored blobs keep https URLs in metadata. */
+function blobOptions(contentType: string, multipart = false) {
+  return {
+    access: 'public' as const,
+    contentType: contentType || 'application/octet-stream',
+    addRandomSuffix: false,
+    token: blobToken(),
+    multipart,
+  };
+}
+
+/** API-facing URLs (proxy downloads). Stored metadata keeps real blob URLs. */
 function toPublicRecord(record: CaseStudyRecord): CaseStudyRecord {
   const attachments = Array.isArray(record.attachments) ? record.attachments : [];
   return {
@@ -66,46 +82,56 @@ export function makeDownloadUrl(caseStudyId: string, attachmentId?: string): str
   return `/api/case-studies?action=download&caseStudyId=${encodeURIComponent(caseStudyId)}`;
 }
 
-async function readMetaBlob(url: string): Promise<CaseStudyRecord | null> {
-  const response = await fetch(url, { cache: 'no-store' });
+async function fetchBlobContent(blobUrl: string): Promise<Response> {
+  const token = blobToken();
+  const meta = await head(blobUrl, { token });
+  return fetch(meta.downloadUrl, {
+    cache: 'no-store',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+}
+
+async function readMetaBlob(blob: { url: string; downloadUrl?: string }): Promise<CaseStudyRecord | null> {
+  const token = blobToken();
+  const response = await fetch(blob.downloadUrl || blob.url, {
+    cache: 'no-store',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
   if (!response.ok) return null;
   const data = (await response.json()) as CaseStudyRecord;
   if (!data?.id || !data?.title) return null;
   return data;
 }
 
-// --- Blob storage ---
+async function findStoredFromBlob(caseStudyId: string): Promise<CaseStudyRecord | null> {
+  const metaPathname = `${META_PREFIX}${caseStudyId}.json`;
+  const result = await list({ prefix: metaPathname, limit: 20, token: blobToken() });
+  const metaBlob = result.blobs.find((item) => item.pathname === metaPathname);
+  if (!metaBlob) return null;
+  return readMetaBlob(metaBlob);
+}
 
 async function listFromBlob(): Promise<CaseStudyRecord[]> {
-  const result = await list({ prefix: META_PREFIX, limit: 500 });
+  const result = await list({ prefix: META_PREFIX, limit: 500, token: blobToken() });
   const records: CaseStudyRecord[] = [];
 
   for (const blob of result.blobs) {
-    const record = await readMetaBlob(blob.url);
+    if (!blob.pathname.endsWith('.json')) continue;
+    const record = await readMetaBlob(blob);
     if (record) records.push(toPublicRecord(record));
   }
 
   return records.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
 }
 
-async function findFromBlob(caseStudyId: string): Promise<CaseStudyRecord | null> {
-  const records = await listFromBlob();
-  return records.find((item) => item.id === caseStudyId) || null;
-}
-
 async function putFile(pathname: string, data: Buffer, contentType: string) {
-  return put(pathname, data, {
-    access: 'public',
-    contentType: contentType || 'application/octet-stream',
-    addRandomSuffix: false,
-  });
+  const useMultipart = data.length > 4 * 1024 * 1024;
+  return put(pathname, data, blobOptions(contentType, useMultipart));
 }
 
 async function saveMetaToBlob(caseStudy: CaseStudyRecord) {
   await put(`${META_PREFIX}${caseStudy.id}.json`, JSON.stringify(caseStudy), {
-    access: 'public',
-    contentType: 'application/json',
-    addRandomSuffix: false,
+    ...blobOptions('application/json'),
   });
 }
 
@@ -113,45 +139,54 @@ export async function listCaseStudies(): Promise<CaseStudyRecord[]> {
   if (useBlobStorage()) {
     return listFromBlob();
   }
-  return [...inMemoryCaseStudies];
+  return inMemoryCaseStudies.map(toPublicRecord);
 }
 
 export async function findCaseStudy(caseStudyId: string): Promise<CaseStudyRecord | null> {
   if (useBlobStorage()) {
-    return findFromBlob(caseStudyId);
+    const stored = await findStoredFromBlob(caseStudyId);
+    return stored ? toPublicRecord(stored) : null;
   }
-  return inMemoryCaseStudies.find((item) => item.id === caseStudyId) || null;
+  const found = inMemoryCaseStudies.find((item) => item.id === caseStudyId);
+  return found ? toPublicRecord(found) : null;
 }
 
 export async function resolveDownload(
   caseStudyId: string,
   attachmentId?: string
 ): Promise<{ url: string; name: string; mimeType: string; buffer?: Buffer } | null> {
-  const caseStudy = await findCaseStudy(caseStudyId);
-  if (!caseStudy) return null;
-
-  const attachments = Array.isArray(caseStudy.attachments) ? caseStudy.attachments : [];
-  const targetAttachment = attachmentId ? attachments.find((item) => item.id === attachmentId) : null;
-
   if (useBlobStorage()) {
-    const stored = await findFromBlob(caseStudyId);
+    const stored = await findStoredFromBlob(caseStudyId);
     if (!stored) return null;
+
     const storedAttachments = Array.isArray(stored.attachments) ? stored.attachments : [];
     const storedAttachment = attachmentId
       ? storedAttachments.find((item) => item.id === attachmentId)
       : null;
-    const targetUrl = storedAttachment ? storedAttachment.url : stored.fileUrl;
+    const blobUrl = storedAttachment ? storedAttachment.url : stored.fileUrl;
     const targetName = storedAttachment?.name || stored.fileName || 'case-study-file';
     const targetMime = storedAttachment?.mimeType || 'application/octet-stream';
-    if (!targetUrl?.startsWith('http')) {
+
+    if (!blobUrl?.startsWith('http')) {
       return null;
     }
-    return { url: targetUrl, name: targetName, mimeType: targetMime };
+
+    const response = await fetchBlobContent(blobUrl);
+    if (!response.ok) return null;
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return { url: '', name: targetName, mimeType: targetMime, buffer };
   }
 
+  const caseStudy = inMemoryCaseStudies.find((item) => item.id === caseStudyId);
+  if (!caseStudy) return null;
+
+  const attachments = Array.isArray(caseStudy.attachments) ? caseStudy.attachments : [];
+  const targetAttachment = attachmentId ? attachments.find((item) => item.id === attachmentId) : null;
   const targetFileId = targetAttachment ? targetAttachment.id : caseStudy.fileId;
   const targetFile = inMemoryFiles.get(targetFileId);
   if (!targetFile) return null;
+
   return {
     url: '',
     name: targetFile.name,
@@ -162,7 +197,7 @@ export async function resolveDownload(
 
 export async function deleteCaseStudy(caseStudyId: string): Promise<boolean> {
   if (useBlobStorage()) {
-    const caseStudy = await findFromBlob(caseStudyId);
+    const caseStudy = await findStoredFromBlob(caseStudyId);
     if (!caseStudy) return false;
 
     const urlsToDelete = new Set<string>();
@@ -171,19 +206,13 @@ export async function deleteCaseStudy(caseStudyId: string): Promise<boolean> {
       if (item.url?.startsWith('http')) urlsToDelete.add(item.url);
     }
 
-    const metaList = await list({ prefix: `${META_PREFIX}${caseStudyId}` });
+    const metaList = await list({ prefix: `${META_PREFIX}${caseStudyId}`, token: blobToken() });
     for (const blob of metaList.blobs) urlsToDelete.add(blob.url);
 
-    const fileList = await list({ prefix: `case-studies/files/${caseStudyId}/` });
+    const fileList = await list({ prefix: `case-studies/files/${caseStudyId}/`, token: blobToken() });
     for (const blob of fileList.blobs) urlsToDelete.add(blob.url);
 
-    for (const url of urlsToDelete) {
-      try {
-        await del(url);
-      } catch {
-        // Continue deleting remaining blobs.
-      }
-    }
+    await del(Array.from(urlsToDelete), { token: blobToken() });
     return true;
   }
 

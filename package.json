@@ -15,7 +15,8 @@
     "test:coverage": "vitest --coverage",
     "test:google-oauth": "node scripts/test-google-oauth.mjs",
     "test:google-service-account": "node scripts/test-google-service-account.mjs",
-    "print:vercel-drive-env": "node scripts/print-vercel-drive-env.mjs"
+    "print:vercel-drive-env": "node scripts/print-vercel-drive-env.mjs",
+    "test:vercel-blob": "node scripts/test-vercel-blob.mjs"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.0",

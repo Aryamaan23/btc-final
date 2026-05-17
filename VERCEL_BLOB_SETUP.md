@@ -21,9 +21,20 @@ Push your latest code and deploy. The API uses Blob when `BLOB_READ_WRITE_TOKEN`
 
 ## 3. Verify
 
-Upload a test case study on the live site. It should appear on Publications and remain after refresh.
+```bash
+# In project root — create .env.local with one line (no quotes around value):
+# BLOB_READ_WRITE_TOKEN=vercel_blob_rw_...
 
-Local dev without Blob uses in-memory storage (resets when the dev server restarts). To test Blob locally, copy `BLOB_READ_WRITE_TOKEN` from Vercel into `.env.local`.
+npm run test:vercel-blob
+```
+
+You should see `PASS: upload`, `PASS: list`, `PASS: delete`.
+
+Then upload a test case study on the live site.
+
+**Important:** In Vercel env settings, paste the token **without** surrounding quotes. If you use quotes in the dashboard, they become part of the token and uploads fail.
+
+Local dev without Blob uses in-memory storage (resets when the dev server restarts). For local Blob testing, add `BLOB_READ_WRITE_TOKEN` to `.env.local` and run `vercel dev` (or the test script above).
 
 ## Free tier limits (Hobby)
 
