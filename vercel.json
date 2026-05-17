@@ -1,6 +1,11 @@
 {
   "buildCommand": "npm run build:skip-check",
   "outputDirectory": "dist",
+  "functions": {
+    "api/case-studies.ts": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     {
       "source": "/((?!api/|assets/|images/|.*\\..*).*)",

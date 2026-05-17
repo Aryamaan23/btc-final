@@ -3,7 +3,6 @@ import { scryptSync, timingSafeEqual } from 'node:crypto';
 import {
   BLOB_NOT_CONFIGURED_ERROR,
   deleteCaseStudy,
-  findCaseStudy,
   isProductionRuntime,
   listCaseStudies,
   resolveDownload,
@@ -140,7 +139,7 @@ function storageReady(): boolean {
   return useBlobStorage() || !isProductionRuntime();
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handlerImpl(req: VercelRequest, res: VercelResponse) {
   setCors(res);
 
   if (req.method === 'OPTIONS') {
@@ -268,5 +267,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to upload case study';
     return json(res, 500, { success: false, error: message });
+  }
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  try {
+    return await handlerImpl(req, res);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'A server error occurred';
+    console.error('[case-studies] unhandled error:', error);
+    return json(res, 500, {
+      success: false,
+      error: message,
+    });
   }
 }

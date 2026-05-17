@@ -1,5 +1,3 @@
-import { del, head, list, put } from '@vercel/blob';
-
 export type CaseStudyRecord = {
   id: string;
   title: string;
@@ -28,6 +26,17 @@ type InMemoryStoredFile = {
 const META_PREFIX = 'case-studies/meta/';
 const inMemoryCaseStudies: CaseStudyRecord[] = [];
 const inMemoryFiles = new Map<string, InMemoryStoredFile>();
+
+type BlobSdk = typeof import('@vercel/blob');
+
+let blobSdkPromise: Promise<BlobSdk> | null = null;
+
+async function getBlobSdk(): Promise<BlobSdk> {
+  if (!blobSdkPromise) {
+    blobSdkPromise = import('@vercel/blob');
+  }
+  return blobSdkPromise;
+}
 
 function blobToken(): string | undefined {
   const raw = process.env.BLOB_READ_WRITE_TOKEN;
@@ -84,6 +93,7 @@ export function makeDownloadUrl(caseStudyId: string, attachmentId?: string): str
 
 async function fetchBlobContent(blobUrl: string): Promise<Response> {
   const token = blobToken();
+  const { head } = await getBlobSdk();
   const meta = await head(blobUrl, { token });
   return fetch(meta.downloadUrl, {
     cache: 'no-store',
@@ -104,6 +114,7 @@ async function readMetaBlob(blob: { url: string; downloadUrl?: string }): Promis
 }
 
 async function findStoredFromBlob(caseStudyId: string): Promise<CaseStudyRecord | null> {
+  const { list } = await getBlobSdk();
   const metaPathname = `${META_PREFIX}${caseStudyId}.json`;
   const result = await list({ prefix: metaPathname, limit: 20, token: blobToken() });
   const metaBlob = result.blobs.find((item) => item.pathname === metaPathname);
@@ -112,6 +123,7 @@ async function findStoredFromBlob(caseStudyId: string): Promise<CaseStudyRecord 
 }
 
 async function listFromBlob(): Promise<CaseStudyRecord[]> {
+  const { list } = await getBlobSdk();
   const result = await list({ prefix: META_PREFIX, limit: 500, token: blobToken() });
   const records: CaseStudyRecord[] = [];
 
@@ -125,11 +137,13 @@ async function listFromBlob(): Promise<CaseStudyRecord[]> {
 }
 
 async function putFile(pathname: string, data: Buffer, contentType: string) {
+  const { put } = await getBlobSdk();
   const useMultipart = data.length > 4 * 1024 * 1024;
   return put(pathname, data, blobOptions(contentType, useMultipart));
 }
 
 async function saveMetaToBlob(caseStudy: CaseStudyRecord) {
+  const { put } = await getBlobSdk();
   await put(`${META_PREFIX}${caseStudy.id}.json`, JSON.stringify(caseStudy), {
     ...blobOptions('application/json'),
   });
@@ -206,6 +220,7 @@ export async function deleteCaseStudy(caseStudyId: string): Promise<boolean> {
       if (item.url?.startsWith('http')) urlsToDelete.add(item.url);
     }
 
+    const { list, del } = await getBlobSdk();
     const metaList = await list({ prefix: `${META_PREFIX}${caseStudyId}`, token: blobToken() });
     for (const blob of metaList.blobs) urlsToDelete.add(blob.url);
 

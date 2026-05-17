@@ -31,6 +31,46 @@ type DeleteCaseStudyInput = {
   editorPassword: string;
 };
 
+async function parseApiResponse(response: Response): Promise<{
+  ok: boolean;
+  status: number;
+  data: CaseStudyApiResponse;
+}> {
+  const contentType = response.headers.get('content-type') || '';
+  const raw = await response.text();
+
+  const tryJson = contentType.includes('application/json') || raw.trim().startsWith('{');
+  if (tryJson) {
+    try {
+      const data = JSON.parse(raw) as CaseStudyApiResponse;
+      return { ok: response.ok, status: response.status, data };
+    } catch {
+      if (contentType.includes('application/json')) {
+        return {
+          ok: false,
+          status: response.status,
+          data: {
+            success: false,
+            error: 'Server returned invalid JSON. Redeploy the site or check Vercel function logs.',
+          },
+        };
+      }
+    }
+  }
+
+  const snippet = raw.trim().slice(0, 160);
+  return {
+    ok: false,
+    status: response.status,
+    data: {
+      success: false,
+      error: snippet
+        ? `Server error (${response.status}): ${snippet}`
+        : `Server error (${response.status}). Check that /api/case-studies is deployed and BLOB_READ_WRITE_TOKEN is set.`,
+    },
+  };
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -53,20 +93,20 @@ export async function fetchCaseStudies(): Promise<CaseStudyApiResponse> {
     const response = await fetch(API_URL, {
       method: 'GET',
       headers: {
-        'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
     });
 
-    const result = await response.json();
-    if (!response.ok) {
+    const { ok, data } = await parseApiResponse(response);
+    if (!ok) {
       return {
         success: false,
-        error: result.error || 'Failed to load case studies',
+        error: data.error || 'Failed to load case studies',
       };
     }
     return {
       success: true,
-      caseStudies: result.caseStudies || [],
+      caseStudies: data.caseStudies || [],
     };
   } catch (error) {
     return {
@@ -90,6 +130,7 @@ export async function uploadCaseStudy(data: UploadCaseStudyInput): Promise<CaseS
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
       body: JSON.stringify({
         action: 'upload',
@@ -106,8 +147,8 @@ export async function uploadCaseStudy(data: UploadCaseStudyInput): Promise<CaseS
       }),
     });
 
-    const result = await response.json();
-    if (!response.ok) {
+    const { ok, data: result } = await parseApiResponse(response);
+    if (!ok) {
       return {
         success: false,
         error: result.error || 'Upload failed',
@@ -134,6 +175,7 @@ export async function authenticateCaseStudyEditor(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
       body: JSON.stringify({
         action: 'auth',
@@ -142,8 +184,8 @@ export async function authenticateCaseStudyEditor(
       }),
     });
 
-    const result = await response.json();
-    if (!response.ok) {
+    const { ok, data: result } = await parseApiResponse(response);
+    if (!ok) {
       return {
         success: false,
         error: result.error || 'Authentication failed',
@@ -167,6 +209,7 @@ export async function deleteCaseStudy(data: DeleteCaseStudyInput): Promise<CaseS
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
       body: JSON.stringify({
         action: 'delete',
@@ -176,8 +219,8 @@ export async function deleteCaseStudy(data: DeleteCaseStudyInput): Promise<CaseS
       }),
     });
 
-    const result = await response.json();
-    if (!response.ok) {
+    const { ok, data: result } = await parseApiResponse(response);
+    if (!ok) {
       return {
         success: false,
         error: result.error || 'Delete failed',
