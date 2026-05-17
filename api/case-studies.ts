@@ -1,14 +1,321 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { scryptSync, timingSafeEqual } from 'crypto';
-import {
-  BLOB_NOT_CONFIGURED_ERROR,
-  deleteCaseStudy,
-  isProductionRuntime,
-  listCaseStudies,
-  resolveDownload,
-  uploadCaseStudy,
-  useBlobStorage,
-} from './_caseStudyStorage';
+
+// ---------------------------------------------------------------------------
+// Case study storage (inline — single file for reliable Vercel bundling)
+// ---------------------------------------------------------------------------
+
+type CaseStudyRecord = {
+  id: string;
+  title: string;
+  studentName: string;
+  program: string;
+  summary: string;
+  submittedAt: string;
+  fileId: string;
+  fileUrl: string;
+  fileName: string;
+  attachments?: Array<{
+    id: string;
+    name: string;
+    url: string;
+    mimeType: string;
+  }>;
+};
+
+type InMemoryStoredFile = {
+  id: string;
+  name: string;
+  mimeType: string;
+  data: Buffer;
+};
+
+const META_PREFIX = 'case-studies/meta/';
+const BLOB_NOT_CONFIGURED_ERROR =
+  'File storage is not configured. In Vercel → Storage → create a Blob store and connect it to this project (adds BLOB_READ_WRITE_TOKEN), then redeploy.';
+
+const inMemoryCaseStudies: CaseStudyRecord[] = [];
+const inMemoryFiles = new Map<string, InMemoryStoredFile>();
+
+function blobToken(): string | undefined {
+  const raw = process.env.BLOB_READ_WRITE_TOKEN;
+  if (!raw) return undefined;
+  return raw.trim().replace(/^["']|["']$/g, '');
+}
+
+function useBlobStorage(): boolean {
+  return Boolean(blobToken());
+}
+
+function isProductionRuntime(): boolean {
+  return process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
+}
+
+async function loadBlobSdk() {
+  return import('@vercel/blob');
+}
+
+function sanitizeFileName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function makeDownloadUrl(caseStudyId: string, attachmentId?: string): string {
+  if (attachmentId) {
+    return `/api/case-studies?action=download&caseStudyId=${encodeURIComponent(
+      caseStudyId
+    )}&attachmentId=${encodeURIComponent(attachmentId)}`;
+  }
+  return `/api/case-studies?action=download&caseStudyId=${encodeURIComponent(caseStudyId)}`;
+}
+
+function toPublicRecord(record: CaseStudyRecord): CaseStudyRecord {
+  const attachments = Array.isArray(record.attachments) ? record.attachments : [];
+  return {
+    ...record,
+    fileUrl: makeDownloadUrl(record.id),
+    attachments: attachments.map((attachment) => ({
+      ...attachment,
+      url: makeDownloadUrl(record.id, attachment.id),
+    })),
+  };
+}
+
+function blobOptions(contentType: string, multipart = false) {
+  return {
+    access: 'public' as const,
+    contentType: contentType || 'application/octet-stream',
+    addRandomSuffix: false,
+    token: blobToken(),
+    multipart,
+  };
+}
+
+async function readMetaBlob(blob: { url: string; downloadUrl?: string }): Promise<CaseStudyRecord | null> {
+  const response = await fetch(blob.downloadUrl || blob.url, { cache: 'no-store' });
+  if (!response.ok) return null;
+  const data = (await response.json()) as CaseStudyRecord;
+  if (!data?.id || !data?.title) return null;
+  return data;
+}
+
+async function findStoredFromBlob(caseStudyId: string): Promise<CaseStudyRecord | null> {
+  const { list } = await loadBlobSdk();
+  const metaPathname = `${META_PREFIX}${caseStudyId}.json`;
+  const result = await list({ prefix: metaPathname, limit: 20, token: blobToken() });
+  const metaBlob = result.blobs.find((item) => item.pathname === metaPathname);
+  if (!metaBlob) return null;
+  return readMetaBlob(metaBlob);
+}
+
+async function listFromBlob(): Promise<CaseStudyRecord[]> {
+  try {
+    const { list } = await loadBlobSdk();
+    const result = await list({ prefix: META_PREFIX, limit: 500, token: blobToken() });
+    const records: CaseStudyRecord[] = [];
+
+    for (const blob of result.blobs) {
+      if (!blob.pathname.endsWith('.json')) continue;
+      const record = await readMetaBlob(blob);
+      if (record) records.push(toPublicRecord(record));
+    }
+
+    return records.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+  } catch (error) {
+    console.error('[case-studies] listFromBlob failed:', error);
+    return [];
+  }
+}
+
+async function putFile(pathname: string, data: Buffer, contentType: string) {
+  const { put } = await loadBlobSdk();
+  const useMultipart = data.length > 4 * 1024 * 1024;
+  return put(pathname, data, blobOptions(contentType, useMultipart));
+}
+
+async function saveMetaToBlob(caseStudy: CaseStudyRecord) {
+  const { put } = await loadBlobSdk();
+  await put(`${META_PREFIX}${caseStudy.id}.json`, JSON.stringify(caseStudy), {
+    ...blobOptions('application/json'),
+  });
+}
+
+async function listCaseStudies(): Promise<CaseStudyRecord[]> {
+  if (useBlobStorage()) {
+    return listFromBlob();
+  }
+  return inMemoryCaseStudies.map(toPublicRecord);
+}
+
+async function resolveDownload(
+  caseStudyId: string,
+  attachmentId?: string
+): Promise<{ url: string; name: string; mimeType: string; buffer?: Buffer } | null> {
+  if (useBlobStorage()) {
+    const stored = await findStoredFromBlob(caseStudyId);
+    if (!stored) return null;
+
+    const storedAttachments = Array.isArray(stored.attachments) ? stored.attachments : [];
+    const storedAttachment = attachmentId
+      ? storedAttachments.find((item) => item.id === attachmentId)
+      : null;
+    const blobUrl = storedAttachment ? storedAttachment.url : stored.fileUrl;
+    const targetName = storedAttachment?.name || stored.fileName || 'case-study-file';
+    const targetMime = storedAttachment?.mimeType || 'application/octet-stream';
+
+    if (!blobUrl?.startsWith('http')) {
+      return null;
+    }
+
+    const response = await fetch(blobUrl, { cache: 'no-store' });
+    if (!response.ok) return null;
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return { url: '', name: targetName, mimeType: targetMime, buffer };
+  }
+
+  const caseStudy = inMemoryCaseStudies.find((item) => item.id === caseStudyId);
+  if (!caseStudy) return null;
+
+  const attachments = Array.isArray(caseStudy.attachments) ? caseStudy.attachments : [];
+  const targetAttachment = attachmentId ? attachments.find((item) => item.id === attachmentId) : null;
+  const targetFileId = targetAttachment ? targetAttachment.id : caseStudy.fileId;
+  const targetFile = inMemoryFiles.get(targetFileId);
+  if (!targetFile) return null;
+
+  return {
+    url: '',
+    name: targetFile.name,
+    mimeType: targetFile.mimeType,
+    buffer: targetFile.data,
+  };
+}
+
+async function deleteCaseStudy(caseStudyId: string): Promise<boolean> {
+  if (useBlobStorage()) {
+    const caseStudy = await findStoredFromBlob(caseStudyId);
+    if (!caseStudy) return false;
+
+    const { list, del } = await loadBlobSdk();
+    const urlsToDelete = new Set<string>();
+    if (caseStudy.fileUrl?.startsWith('http')) urlsToDelete.add(caseStudy.fileUrl);
+    for (const item of caseStudy.attachments || []) {
+      if (item.url?.startsWith('http')) urlsToDelete.add(item.url);
+    }
+
+    const metaList = await list({ prefix: `${META_PREFIX}${caseStudyId}`, token: blobToken() });
+    for (const blob of metaList.blobs) urlsToDelete.add(blob.url);
+
+    const fileList = await list({ prefix: `case-studies/files/${caseStudyId}/`, token: blobToken() });
+    for (const blob of fileList.blobs) urlsToDelete.add(blob.url);
+
+    if (urlsToDelete.size > 0) {
+      await del(Array.from(urlsToDelete), { token: blobToken() });
+    }
+    return true;
+  }
+
+  const index = inMemoryCaseStudies.findIndex((item) => item.id === caseStudyId);
+  if (index === -1) return false;
+  const existing = inMemoryCaseStudies[index];
+  const attachments = Array.isArray(existing.attachments) ? existing.attachments : [];
+  inMemoryFiles.delete(existing.fileId);
+  attachments.forEach((item) => inMemoryFiles.delete(item.id));
+  inMemoryCaseStudies.splice(index, 1);
+  return true;
+}
+
+type UploadCaseStudyInput = {
+  title: string;
+  studentName: string;
+  program: string;
+  summary: string;
+  fileName: string;
+  mimeType: string;
+  binary: Buffer;
+  attachments: Array<{ fileName: string; mimeType: string; base64Data: string }>;
+};
+
+async function uploadCaseStudy(input: UploadCaseStudyInput): Promise<CaseStudyRecord> {
+  const nowIso = new Date().toISOString();
+  const id = `case-${Date.now()}`;
+
+  const caseStudy: CaseStudyRecord = {
+    id,
+    title: input.title,
+    studentName: input.studentName,
+    program: input.program,
+    summary: input.summary,
+    submittedAt: nowIso,
+    fileId: '',
+    fileUrl: '',
+    fileName: input.fileName,
+    attachments: [],
+  };
+
+  if (useBlobStorage()) {
+    const mainPath = `case-studies/files/${id}/main/${sanitizeFileName(input.fileName)}`;
+    const mainBlob = await putFile(mainPath, input.binary, input.mimeType);
+    caseStudy.fileId = mainPath;
+    caseStudy.fileUrl = mainBlob.url;
+
+    for (const attachment of input.attachments) {
+      const attachmentBinary = Buffer.from(attachment.base64Data, 'base64');
+      if (!attachmentBinary.length) continue;
+
+      const attachmentId = `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const attachmentPath = `case-studies/files/${id}/attachments/${attachmentId}/${sanitizeFileName(
+        attachment.fileName
+      )}`;
+      const attachmentBlob = await putFile(attachmentPath, attachmentBinary, attachment.mimeType);
+
+      caseStudy.attachments?.push({
+        id: attachmentId,
+        name: attachment.fileName,
+        url: attachmentBlob.url,
+        mimeType: attachment.mimeType,
+      });
+    }
+
+    await saveMetaToBlob(caseStudy);
+    return toPublicRecord(caseStudy);
+  }
+
+  const fileId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  inMemoryFiles.set(fileId, {
+    id: fileId,
+    name: input.fileName,
+    mimeType: input.mimeType,
+    data: input.binary,
+  });
+  caseStudy.fileId = fileId;
+  caseStudy.fileUrl = makeDownloadUrl(id);
+
+  for (const attachment of input.attachments) {
+    const attachmentBinary = Buffer.from(attachment.base64Data, 'base64');
+    if (!attachmentBinary.length) continue;
+
+    const attachmentId = `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    inMemoryFiles.set(attachmentId, {
+      id: attachmentId,
+      name: attachment.fileName,
+      mimeType: attachment.mimeType,
+      data: attachmentBinary,
+    });
+    caseStudy.attachments?.push({
+      id: attachmentId,
+      name: attachment.fileName,
+      url: makeDownloadUrl(id, attachmentId),
+      mimeType: attachment.mimeType,
+    });
+  }
+
+  inMemoryCaseStudies.unshift(caseStudy);
+  return toPublicRecord(caseStudy);
+}
+
+// ---------------------------------------------------------------------------
+// Editor auth
+// ---------------------------------------------------------------------------
 
 type EditorCredential = {
   usernameHash: string;
@@ -36,26 +343,15 @@ const DEFAULT_EDITOR_CREDENTIALS: EditorCredential[] = [
   },
 ];
 
-function json(res: VercelResponse, status: number, payload: unknown) {
-  res.status(status).setHeader('Content-Type', 'application/json');
-  return res.send(payload);
-}
-
-function setCors(res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-}
-
-function normalizeBody(req: VercelRequest): any {
+function normalizeBody(req: VercelRequest): Record<string, unknown> {
   if (typeof req.body === 'string') {
     try {
-      return JSON.parse(req.body);
+      return JSON.parse(req.body) as Record<string, unknown>;
     } catch {
       return {};
     }
   }
-  return req.body || {};
+  return (req.body as Record<string, unknown>) || {};
 }
 
 function toHashedCredential(item: {
@@ -139,37 +435,43 @@ function storageReady(): boolean {
   return useBlobStorage() || !isProductionRuntime();
 }
 
-async function handlerImpl(req: VercelRequest, res: VercelResponse) {
-  setCors(res);
+// ---------------------------------------------------------------------------
+// HTTP handler
+// ---------------------------------------------------------------------------
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (isProductionRuntime() && !useBlobStorage()) {
-    return json(res, 503, { success: false, error: BLOB_NOT_CONFIGURED_ERROR });
-  }
+  try {
+    if (req.method === 'OPTIONS') {
+      return res.status(200).end();
+    }
 
-  if (req.method === 'GET') {
-    try {
-      if (req.query.action === 'health') {
-        return json(res, 200, {
-          success: true,
-          blobConfigured: useBlobStorage(),
-          runtime: isProductionRuntime() ? 'production' : 'development',
-        });
-      }
+    if (req.query.action === 'health') {
+      return res.status(200).json({
+        success: true,
+        blobConfigured: useBlobStorage(),
+        runtime: isProductionRuntime() ? 'production' : 'development',
+      });
+    }
 
+    if (isProductionRuntime() && !useBlobStorage()) {
+      return res.status(503).json({ success: false, error: BLOB_NOT_CONFIGURED_ERROR });
+    }
+
+    if (req.method === 'GET') {
       if (req.query.action === 'download') {
         const caseStudyId = String(req.query.caseStudyId || '').trim();
         const attachmentId = String(req.query.attachmentId || '').trim();
         if (!caseStudyId) {
-          return json(res, 400, { success: false, error: 'Missing caseStudyId' });
+          return res.status(400).json({ success: false, error: 'Missing caseStudyId' });
         }
 
         const file = await resolveDownload(caseStudyId, attachmentId || undefined);
         if (!file) {
-          return json(res, 404, { success: false, error: 'File not found' });
+          return res.status(404).json({ success: false, error: 'File not found' });
         }
 
         if (file.buffer) {
@@ -183,82 +485,78 @@ async function handlerImpl(req: VercelRequest, res: VercelResponse) {
       }
 
       const caseStudies = await listCaseStudies();
-      return json(res, 200, { success: true, caseStudies });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load case studies';
-      return json(res, 500, { success: false, error: message });
+      return res.status(200).json({ success: true, caseStudies });
     }
-  }
 
-  if (req.method !== 'POST') {
-    return json(res, 405, { success: false, error: 'Method not allowed' });
-  }
+    if (req.method !== 'POST') {
+      return res.status(405).json({ success: false, error: 'Method not allowed' });
+    }
 
-  try {
     const body = normalizeBody(req);
-    const { action, editorEmail, editorPassword } = body as Record<string, string>;
+    const action = String(body.action || '');
+    const editorEmail = String(body.editorEmail || '');
+    const editorPassword = String(body.editorPassword || '');
 
     if (action === 'auth') {
       if (!validateEditor(editorEmail, editorPassword)) {
-        return json(res, 401, { success: false, error: 'Invalid editor credentials' });
+        return res.status(401).json({ success: false, error: 'Invalid editor credentials' });
       }
-      return json(res, 200, { success: true });
+      return res.status(200).json({ success: true });
     }
 
     if (!validateEditor(editorEmail, editorPassword)) {
-      return json(res, 401, { success: false, error: 'Only authorized editors can upload case studies' });
+      return res.status(401).json({ success: false, error: 'Only authorized editors can upload case studies' });
     }
 
     if (action === 'delete') {
-      const caseStudyId = String((body as any).caseStudyId || '').trim();
+      const caseStudyId = String(body.caseStudyId || '').trim();
       if (!caseStudyId) {
-        return json(res, 400, { success: false, error: 'Missing caseStudyId for delete' });
+        return res.status(400).json({ success: false, error: 'Missing caseStudyId for delete' });
       }
 
       const deleted = await deleteCaseStudy(caseStudyId);
       if (!deleted) {
-        return json(res, 404, { success: false, error: 'Case study not found' });
+        return res.status(404).json({ success: false, error: 'Case study not found' });
       }
-      return json(res, 200, { success: true });
+      return res.status(200).json({ success: true });
     }
 
     if (!storageReady()) {
-      return json(res, 503, { success: false, error: BLOB_NOT_CONFIGURED_ERROR });
+      return res.status(503).json({ success: false, error: BLOB_NOT_CONFIGURED_ERROR });
     }
 
-    const {
-      title,
-      studentName,
-      program,
-      summary,
-      fileName,
-      mimeType,
-      base64Data,
-      attachments = [],
-    } = body as any;
+    const title = String(body.title || '');
+    const studentName = String(body.studentName || '');
+    const program = String(body.program || '');
+    const summary = String(body.summary || '');
+    const fileName = String(body.fileName || '');
+    const mimeType = String(body.mimeType || '');
+    const base64Data = String(body.base64Data || '');
+    const attachments = Array.isArray(body.attachments) ? body.attachments : [];
 
     if (!title || !studentName || !program || !summary || !fileName || !mimeType || !base64Data) {
-      return json(res, 400, { success: false, error: 'Missing required fields for case study upload' });
+      return res.status(400).json({ success: false, error: 'Missing required fields for case study upload' });
     }
 
     if (summary.trim().length < 20) {
-      return json(res, 400, { success: false, error: 'Summary should be at least 20 characters' });
+      return res.status(400).json({ success: false, error: 'Summary should be at least 20 characters' });
     }
 
     const binary = Buffer.from(base64Data, 'base64');
     if (!binary.length) {
-      return json(res, 400, { success: false, error: 'Uploaded file is empty or invalid' });
+      return res.status(400).json({ success: false, error: 'Uploaded file is empty or invalid' });
     }
 
-    const normalizedAttachments = Array.isArray(attachments)
-      ? attachments
-          .map((item: any) => ({
-            fileName: String(item?.fileName || '').trim(),
-            mimeType: String(item?.mimeType || 'application/octet-stream').trim(),
-            base64Data: String(item?.base64Data || '').trim(),
-          }))
-          .filter((item) => item.fileName && item.base64Data)
-      : [];
+    const normalizedAttachments = attachments
+      .map((item: unknown) => {
+        const row = item as Record<string, unknown>;
+        return {
+          fileName: String(row?.fileName || '').trim(),
+          mimeType: String(row?.mimeType || 'application/octet-stream').trim(),
+          base64Data: String(row?.base64Data || '').trim(),
+        };
+      })
+      .filter((item) => item.fileName && item.base64Data);
 
     const caseStudy = await uploadCaseStudy({
       title: title.trim(),
@@ -271,22 +569,10 @@ async function handlerImpl(req: VercelRequest, res: VercelResponse) {
       attachments: normalizedAttachments,
     });
 
-    return json(res, 200, { success: true, caseStudy });
+    return res.status(200).json({ success: true, caseStudy });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to upload case study';
-    return json(res, 500, { success: false, error: message });
-  }
-}
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  try {
-    return await handlerImpl(req, res);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'A server error occurred';
-    console.error('[case-studies] unhandled error:', error);
-    return json(res, 500, {
-      success: false,
-      error: message,
-    });
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    console.error('[case-studies] handler error:', error);
+    return res.status(500).json({ success: false, error: message });
   }
 }
