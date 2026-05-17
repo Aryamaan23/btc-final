@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { Navigation, Footer, ScrollToTop } from './components/common'
+import { EditorAuthProvider } from './context/EditorAuthContext'
 import './styles/globals.css'
 
 // Lazy load page components for code splitting
@@ -31,6 +32,7 @@ const PageLoader = () => (
 function App() {
   return (
     <Router>
+      <EditorAuthProvider>
       <ScrollToTop />
       <div className="App min-h-screen flex flex-col">
         {/* Skip to main content link for keyboard navigation */}
@@ -65,6 +67,7 @@ function App() {
 
         <Footer />
       </div>
+      </EditorAuthProvider>
     </Router>
   )
 }

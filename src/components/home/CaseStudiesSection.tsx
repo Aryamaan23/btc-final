@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { fetchCaseStudies } from '../../services/caseStudyService';
 import type { CaseStudy } from '../../types';
 import PublishedCaseStudiesList from './PublishedCaseStudiesList';
+import { EditorWorkspaceBar } from '../editor';
+import { useEditorAuth } from '../../context/EditorAuthContext';
+import { useCaseStudyEditorActions } from '../../hooks/useCaseStudyEditorActions';
 
 export type CaseStudiesSectionProps = {
   /** Larger cards and richer layout for the Publications page */
@@ -10,6 +13,7 @@ export type CaseStudiesSectionProps = {
 
 function CaseStudiesSection({ variant = 'default' }: CaseStudiesSectionProps) {
   const isFeatured = variant === 'featured';
+  const { isLoggedIn } = useEditorAuth();
   const [items, setItems] = useState<CaseStudy[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -29,6 +33,9 @@ function CaseStudiesSection({ variant = 'default' }: CaseStudiesSectionProps) {
   useEffect(() => {
     void load();
   }, []);
+
+  const { canEdit, deletingId, actionError, actionMessage, handleDeleteCaseStudy } =
+    useCaseStudyEditorActions(load);
 
   return (
     <section
@@ -54,6 +61,8 @@ function CaseStudiesSection({ variant = 'default' }: CaseStudiesSectionProps) {
         />
       </div>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        {isFeatured && isLoggedIn ? <EditorWorkspaceBar className="mb-8 sm:mb-10" /> : null}
+
         <div className={`text-center ${isFeatured ? 'mb-8 sm:mb-10' : 'mb-10 sm:mb-12'}`}>
           <span
             className={`inline-block text-secondary font-semibold tracking-wider uppercase mb-3 ${
@@ -75,10 +84,20 @@ function CaseStudiesSection({ variant = 'default' }: CaseStudiesSectionProps) {
               isFeatured ? 'text-base sm:text-lg' : 'text-sm sm:text-base'
             }`}
           >
-            Programme-wise student case studies and field reflections — read full articles on-site and download
-            original files. Editors upload and manage content from the navbar (Editor login).
+            {isLoggedIn
+              ? 'You are in editor mode — open any article to review it, or use Upload & manage to publish new work. Delete controls appear on each card when your session is unlocked.'
+              : 'Programme-wise student case studies and field reflections — read full articles on-site and download original files.'}
           </p>
         </div>
+
+        {actionError ? (
+          <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{actionError}</p>
+        ) : null}
+        {actionMessage ? (
+          <p className="mb-4 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+            {actionMessage}
+          </p>
+        ) : null}
 
         <PublishedCaseStudiesList
           variant={variant}
@@ -86,7 +105,16 @@ function CaseStudiesSection({ variant = 'default' }: CaseStudiesSectionProps) {
           loading={loading}
           loadError={loadError}
           onRefresh={() => void load()}
+          showDelete={canEdit}
+          onDelete={handleDeleteCaseStudy}
+          deletingId={deletingId}
         />
+
+        {isLoggedIn && !canEdit ? (
+          <p className="mt-6 text-center text-sm text-amber-800">
+            Confirm your password in the editor bar above to delete publications from this page.
+          </p>
+        ) : null}
       </div>
     </section>
   );

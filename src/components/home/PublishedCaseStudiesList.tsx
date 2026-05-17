@@ -129,14 +129,16 @@ function PublishedCaseStudiesList({
                   View original file
                 </Button>
                 {showDelete && onDelete ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
+                  <button
+                    type="button"
                     onClick={() => onDelete(item.id, item.title)}
                     disabled={deletingId === item.id}
+                    className={`inline-flex items-center justify-center rounded-lg border-2 border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-60 ${
+                      isFeatured ? 'min-h-[2.75rem]' : ''
+                    }`}
                   >
                     {deletingId === item.id ? 'Deleting...' : 'Delete'}
-                  </Button>
+                  </button>
                 ) : null}
               </div>
             </article>

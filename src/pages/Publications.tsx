@@ -19,9 +19,9 @@ function Publications() {
           <PageHero
             eyebrow="Publications & field documentation"
             title="Stories from the ground"
-            description="Programme-wise student case studies, district immersions, and reflections — published as readable articles with downloadable sources. Editors upload and manage content from Editor login in the navigation bar."
+            description="Programme-wise student case studies, district immersions, and reflections — published as readable articles with downloadable sources. Editors sign in once from the navigation bar to upload, review, and remove publications across this section."
             primaryCta={{ label: 'Browse case studies', href: '#case-studies-heading' }}
-            secondaryCta={{ label: 'Contact team', href: '/contact' }}
+            secondaryCta={{ label: 'Editor workspace', href: '/publications/editor' }}
             className="mb-6 sm:mb-8"
           />
           {showDeletedPublicationAlert ? (
