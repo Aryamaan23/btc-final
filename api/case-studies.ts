@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { scryptSync, timingSafeEqual } from 'node:crypto';
+import { scryptSync, timingSafeEqual } from 'crypto';
 import {
   BLOB_NOT_CONFIGURED_ERROR,
   deleteCaseStudy,
@@ -8,7 +8,7 @@ import {
   resolveDownload,
   uploadCaseStudy,
   useBlobStorage,
-} from './caseStudyStorage';
+} from './_caseStudyStorage';
 
 type EditorCredential = {
   usernameHash: string;
@@ -152,6 +152,14 @@ async function handlerImpl(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === 'GET') {
     try {
+      if (req.query.action === 'health') {
+        return json(res, 200, {
+          success: true,
+          blobConfigured: useBlobStorage(),
+          runtime: isProductionRuntime() ? 'production' : 'development',
+        });
+      }
+
       if (req.query.action === 'download') {
         const caseStudyId = String(req.query.caseStudyId || '').trim();
         const attachmentId = String(req.query.attachmentId || '').trim();
