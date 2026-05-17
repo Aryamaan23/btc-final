@@ -54,6 +54,12 @@ function isProductionRuntime(): boolean {
 const BLOB_API_URL = 'https://blob.vercel-storage.com';
 const BLOB_API_VERSION = '12';
 
+function blobAccess(): 'public' | 'private' {
+  const configured = process.env.BLOB_STORE_ACCESS?.trim().toLowerCase();
+  if (configured === 'public') return 'public';
+  return 'private';
+}
+
 type BlobListItem = {
   url: string;
   downloadUrl: string;
@@ -87,7 +93,7 @@ async function blobPut(pathname: string, body: Buffer | string, contentType: str
     method: 'PUT',
     body,
     headers: {
-      'x-vercel-blob-access': 'public',
+      'x-vercel-blob-access': blobAccess(),
       'x-content-type': contentType,
       'x-add-random-suffix': '0',
     },
@@ -110,6 +116,17 @@ async function blobDel(urls: string[]): Promise<void> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ urls }),
   });
+}
+
+async function blobGetBytes(targetUrl: string): Promise<Buffer | null> {
+  const token = blobToken();
+  if (!token || !targetUrl.startsWith('http')) return null;
+  const response = await fetch(targetUrl, {
+    cache: 'no-store',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) return null;
+  return Buffer.from(await response.arrayBuffer());
 }
 
 function sanitizeFileName(name: string): string {
@@ -138,11 +155,15 @@ function toPublicRecord(record: CaseStudyRecord): CaseStudyRecord {
 }
 
 async function readMetaBlob(blob: { url: string; downloadUrl?: string }): Promise<CaseStudyRecord | null> {
-  const response = await fetch(blob.downloadUrl || blob.url, { cache: 'no-store' });
-  if (!response.ok) return null;
-  const data = (await response.json()) as CaseStudyRecord;
-  if (!data?.id || !data?.title) return null;
-  return data;
+  const raw = await blobGetBytes(blob.downloadUrl || blob.url);
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw.toString('utf8')) as CaseStudyRecord;
+    if (!data?.id || !data?.title) return null;
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 async function findStoredFromBlob(caseStudyId: string): Promise<CaseStudyRecord | null> {
@@ -210,10 +231,9 @@ async function resolveDownload(
       return null;
     }
 
-    const response = await fetch(blobUrl, { cache: 'no-store' });
-    if (!response.ok) return null;
+    const buffer = await blobGetBytes(blobUrl);
+    if (!buffer) return null;
 
-    const buffer = Buffer.from(await response.arrayBuffer());
     return { url: '', name: targetName, mimeType: targetMime, buffer };
   }
 
@@ -494,6 +514,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({
         success: true,
         blobConfigured: useBlobStorage(),
+        blobAccess: blobAccess(),
         runtime: isProductionRuntime() ? 'production' : 'development',
       });
     }
