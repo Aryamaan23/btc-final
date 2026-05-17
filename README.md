@@ -73,6 +73,7 @@ The application follows a component-based architecture with:
 
 ## Documentation
 
+- **Vercel Blob storage (case studies, free tier):** `VERCEL_BLOB_SETUP.md`
 - Feature documentation: `FEATURES_OVERVIEW.md`
 - Local setup: `LOCAL_SETUP_GUIDE.md`
 - Contact/API setup: `CONTACT_FORM_SETUP.md` and `api/README.md`
