@@ -51,8 +51,65 @@ function isProductionRuntime(): boolean {
   return process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
 }
 
-async function loadBlobSdk() {
-  return import('@vercel/blob');
+const BLOB_API_URL = 'https://blob.vercel-storage.com';
+const BLOB_API_VERSION = '12';
+
+type BlobListItem = {
+  url: string;
+  downloadUrl: string;
+  pathname: string;
+};
+
+async function blobFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = blobToken();
+  if (!token) {
+    throw new Error(BLOB_NOT_CONFIGURED_ERROR);
+  }
+  const url = path.startsWith('http') ? path : `${BLOB_API_URL}${path}`;
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${token}`,
+      'x-api-version': BLOB_API_VERSION,
+      ...(init.headers as Record<string, string> | undefined),
+    },
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`Blob API ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+  }
+  return response;
+}
+
+async function blobPut(pathname: string, body: Buffer | string, contentType: string): Promise<BlobListItem> {
+  const params = new URLSearchParams({ pathname });
+  const response = await blobFetch(`/?${params.toString()}`, {
+    method: 'PUT',
+    body,
+    headers: {
+      'x-vercel-blob-access': 'public',
+      'x-content-type': contentType,
+      'x-add-random-suffix': '0',
+    },
+  });
+  return (await response.json()) as BlobListItem;
+}
+
+async function blobList(options: { prefix?: string; limit?: number }): Promise<{ blobs: BlobListItem[] }> {
+  const params = new URLSearchParams();
+  if (options.prefix) params.set('prefix', options.prefix);
+  if (options.limit) params.set('limit', String(options.limit));
+  const response = await blobFetch(`?${params.toString()}`, { method: 'GET' });
+  return (await response.json()) as { blobs: BlobListItem[] };
+}
+
+async function blobDel(urls: string[]): Promise<void> {
+  if (!urls.length) return;
+  await blobFetch('/delete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ urls }),
+  });
 }
 
 function sanitizeFileName(name: string): string {
@@ -80,16 +137,6 @@ function toPublicRecord(record: CaseStudyRecord): CaseStudyRecord {
   };
 }
 
-function blobOptions(contentType: string, multipart = false) {
-  return {
-    access: 'public' as const,
-    contentType: contentType || 'application/octet-stream',
-    addRandomSuffix: false,
-    token: blobToken(),
-    multipart,
-  };
-}
-
 async function readMetaBlob(blob: { url: string; downloadUrl?: string }): Promise<CaseStudyRecord | null> {
   const response = await fetch(blob.downloadUrl || blob.url, { cache: 'no-store' });
   if (!response.ok) return null;
@@ -99,9 +146,8 @@ async function readMetaBlob(blob: { url: string; downloadUrl?: string }): Promis
 }
 
 async function findStoredFromBlob(caseStudyId: string): Promise<CaseStudyRecord | null> {
-  const { list } = await loadBlobSdk();
   const metaPathname = `${META_PREFIX}${caseStudyId}.json`;
-  const result = await list({ prefix: metaPathname, limit: 20, token: blobToken() });
+  const result = await blobList({ prefix: metaPathname, limit: 20 });
   const metaBlob = result.blobs.find((item) => item.pathname === metaPathname);
   if (!metaBlob) return null;
   return readMetaBlob(metaBlob);
@@ -109,8 +155,7 @@ async function findStoredFromBlob(caseStudyId: string): Promise<CaseStudyRecord 
 
 async function listFromBlob(): Promise<CaseStudyRecord[]> {
   try {
-    const { list } = await loadBlobSdk();
-    const result = await list({ prefix: META_PREFIX, limit: 500, token: blobToken() });
+    const result = await blobList({ prefix: META_PREFIX, limit: 500 });
     const records: CaseStudyRecord[] = [];
 
     for (const blob of result.blobs) {
@@ -127,16 +172,15 @@ async function listFromBlob(): Promise<CaseStudyRecord[]> {
 }
 
 async function putFile(pathname: string, data: Buffer, contentType: string) {
-  const { put } = await loadBlobSdk();
-  const useMultipart = data.length > 4 * 1024 * 1024;
-  return put(pathname, data, blobOptions(contentType, useMultipart));
+  return blobPut(pathname, data, contentType || 'application/octet-stream');
 }
 
 async function saveMetaToBlob(caseStudy: CaseStudyRecord) {
-  const { put } = await loadBlobSdk();
-  await put(`${META_PREFIX}${caseStudy.id}.json`, JSON.stringify(caseStudy), {
-    ...blobOptions('application/json'),
-  });
+  await blobPut(
+    `${META_PREFIX}${caseStudy.id}.json`,
+    JSON.stringify(caseStudy),
+    'application/json'
+  );
 }
 
 async function listCaseStudies(): Promise<CaseStudyRecord[]> {
@@ -195,22 +239,19 @@ async function deleteCaseStudy(caseStudyId: string): Promise<boolean> {
     const caseStudy = await findStoredFromBlob(caseStudyId);
     if (!caseStudy) return false;
 
-    const { list, del } = await loadBlobSdk();
     const urlsToDelete = new Set<string>();
     if (caseStudy.fileUrl?.startsWith('http')) urlsToDelete.add(caseStudy.fileUrl);
     for (const item of caseStudy.attachments || []) {
       if (item.url?.startsWith('http')) urlsToDelete.add(item.url);
     }
 
-    const metaList = await list({ prefix: `${META_PREFIX}${caseStudyId}`, token: blobToken() });
+    const metaList = await blobList({ prefix: `${META_PREFIX}${caseStudyId}` });
     for (const blob of metaList.blobs) urlsToDelete.add(blob.url);
 
-    const fileList = await list({ prefix: `case-studies/files/${caseStudyId}/`, token: blobToken() });
+    const fileList = await blobList({ prefix: `case-studies/files/${caseStudyId}/` });
     for (const blob of fileList.blobs) urlsToDelete.add(blob.url);
 
-    if (urlsToDelete.size > 0) {
-      await del(Array.from(urlsToDelete), { token: blobToken() });
-    }
+    await blobDel(Array.from(urlsToDelete));
     return true;
   }
 
