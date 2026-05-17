@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, PageTransition } from '../components/common';
-import { EditorWorkspaceBar } from '../components/editor';
+import { CaseStudyEditForm, EditorWorkspaceBar } from '../components/editor';
 import { useEditorAuth } from '../context/EditorAuthContext';
 import { useCaseStudyEditorActions } from '../hooks/useCaseStudyEditorActions';
 import { fetchCaseStudies } from '../services/caseStudyService';
@@ -20,10 +20,14 @@ function formatDate(value: string): string {
 function CaseStudyArticle() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { isLoggedIn } = useEditorAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [article, setArticle] = useState<CaseStudy | null>(null);
+  const [saveMessage, setSaveMessage] = useState('');
+
+  const isEditing = searchParams.get('edit') === '1';
 
   const reload = async () => {
     if (!id) return null;
@@ -61,6 +65,25 @@ function CaseStudyArticle() {
     void loadArticle();
   }, [id, navigate]);
 
+  const startEditing = () => {
+    setSaveMessage('');
+    const next = new URLSearchParams(searchParams);
+    next.set('edit', '1');
+    setSearchParams(next, { replace: true });
+  };
+
+  const stopEditing = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('edit');
+    setSearchParams(next, { replace: true });
+  };
+
+  const onSaved = (updated: CaseStudy) => {
+    setArticle(updated);
+    setSaveMessage('Publication updated successfully.');
+    stopEditing();
+  };
+
   const onDeleteArticle = async () => {
     if (!article) return;
     await handleDeleteCaseStudy(article.id, article.title);
@@ -87,70 +110,88 @@ function CaseStudyArticle() {
                 </div>
               </div>
             ) : article ? (
-              <article className="rounded-2xl border border-primary/10 bg-white shadow-card p-6 sm:p-8 md:p-10">
-                {isLoggedIn ? (
-                  <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/15 bg-primary-soft/30 px-4 py-3">
-                    <p className="text-sm font-medium text-primary-dark">Editor view</p>
-                    <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" href="/publications/editor">
-                        Upload & manage
+              <>
+                {isEditing && canEdit ? (
+                  <CaseStudyEditForm article={article} onSaved={onSaved} onCancel={stopEditing} />
+                ) : (
+                  <article className="rounded-2xl border border-primary/10 bg-white shadow-card p-6 sm:p-8 md:p-10">
+                    {isLoggedIn ? (
+                      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/15 bg-primary-soft/30 px-4 py-3">
+                        <p className="text-sm font-medium text-primary-dark">Editor view</p>
+                        <div className="flex flex-wrap gap-2">
+                          {canEdit ? (
+                            <Button size="sm" variant="primary" onClick={startEditing}>
+                              Edit content
+                            </Button>
+                          ) : null}
+                          <Button size="sm" variant="outline" href="/publications/editor">
+                            Upload & manage
+                          </Button>
+                          {canEdit ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void onDeleteArticle()}
+                              disabled={deletingId === article.id}
+                              className="!border-rose-300 !text-rose-700 hover:!bg-rose-50"
+                            >
+                              {deletingId === article.id ? 'Deleting...' : 'Delete'}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {saveMessage ? (
+                      <p className="mb-4 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+                        {saveMessage}
+                      </p>
+                    ) : null}
+                    {actionError ? (
+                      <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                        {actionError}
+                      </p>
+                    ) : null}
+
+                    <p className="text-xs font-semibold uppercase tracking-wide text-secondary mb-3">{article.program}</p>
+                    <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 leading-tight">
+                      {article.title}
+                    </h1>
+                    <p className="text-sm text-gray-600 mt-3">
+                      By {article.studentName} | Published on {formatDate(article.submittedAt)}
+                    </p>
+
+                    <div className="my-6 h-px bg-gradient-to-r from-primary/30 to-transparent" aria-hidden="true" />
+
+                    <section className="prose prose-sm sm:prose-base max-w-none text-gray-700">
+                      <h2 className="text-xl font-semibold text-gray-900 mb-3">Article</h2>
+                      <p className="leading-relaxed whitespace-pre-line">{article.summary}</p>
+                    </section>
+
+                    {article.attachments && article.attachments.length > 0 ? (
+                      <section className="mt-8 rounded-xl border border-primary/15 bg-primary-soft/30 p-4 sm:p-5">
+                        <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-3">Attachments</h3>
+                        <div className="flex flex-wrap gap-2">
+                          {article.attachments.map((attachment) => (
+                            <Button key={attachment.id} size="sm" variant="outline" href={attachment.url}>
+                              Download {attachment.name}
+                            </Button>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null}
+
+                    <div className="mt-8 flex flex-wrap gap-3">
+                      <Button size="sm" variant="primary" href="/publications">
+                        Back to all case studies
                       </Button>
-                      {canEdit ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void onDeleteArticle()}
-                          disabled={deletingId === article.id}
-                          className="!border-rose-300 !text-rose-700 hover:!bg-rose-50"
-                        >
-                          {deletingId === article.id ? 'Deleting...' : 'Delete publication'}
-                        </Button>
-                      ) : null}
+                      <Button size="sm" variant="outline" href={article.fileUrl}>
+                        View original uploaded file
+                      </Button>
                     </div>
-                  </div>
-                ) : null}
-
-                {actionError ? (
-                  <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                    {actionError}
-                  </p>
-                ) : null}
-
-                <p className="text-xs font-semibold uppercase tracking-wide text-secondary mb-3">{article.program}</p>
-                <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-gray-900 leading-tight">{article.title}</h1>
-                <p className="text-sm text-gray-600 mt-3">
-                  By {article.studentName} | Published on {formatDate(article.submittedAt)}
-                </p>
-
-                <div className="my-6 h-px bg-gradient-to-r from-primary/30 to-transparent" aria-hidden="true" />
-
-                <section className="prose prose-sm sm:prose-base max-w-none text-gray-700">
-                  <h2 className="text-xl font-semibold text-gray-900 mb-3">Article</h2>
-                  <p className="leading-relaxed whitespace-pre-line">{article.summary}</p>
-                </section>
-
-                {article.attachments && article.attachments.length > 0 ? (
-                  <section className="mt-8 rounded-xl border border-primary/15 bg-primary-soft/30 p-4 sm:p-5">
-                    <h3 className="text-base sm:text-lg font-semibold text-gray-900 mb-3">Attachments</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {article.attachments.map((attachment) => (
-                        <Button key={attachment.id} size="sm" variant="outline" href={attachment.url}>
-                          Download {attachment.name}
-                        </Button>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-
-                <div className="mt-8 flex flex-wrap gap-3">
-                  <Button size="sm" variant="primary" href="/publications">
-                    Back to all case studies
-                  </Button>
-                  <Button size="sm" variant="outline" href={article.fileUrl}>
-                    View original uploaded file
-                  </Button>
-                </div>
-              </article>
+                  </article>
+                )}
+              </>
             ) : null}
           </div>
         </section>

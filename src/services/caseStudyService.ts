@@ -31,6 +31,16 @@ type DeleteCaseStudyInput = {
   editorPassword: string;
 };
 
+type UpdateCaseStudyInput = {
+  caseStudyId: string;
+  title: string;
+  studentName: string;
+  program: string;
+  summary: string;
+  editorEmail: string;
+  editorPassword: string;
+};
+
 async function parseApiResponse(response: Response): Promise<{
   ok: boolean;
   status: number;
@@ -194,6 +204,46 @@ export async function authenticateCaseStudyEditor(
 
     return {
       success: true,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Network error',
+    };
+  }
+}
+
+export async function updateCaseStudy(data: UpdateCaseStudyInput): Promise<CaseStudyApiResponse> {
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        action: 'update',
+        caseStudyId: data.caseStudyId,
+        title: data.title,
+        studentName: data.studentName,
+        program: data.program,
+        summary: data.summary,
+        editorEmail: data.editorEmail,
+        editorPassword: data.editorPassword,
+      }),
+    });
+
+    const { ok, data: result } = await parseApiResponse(response);
+    if (!ok) {
+      return {
+        success: false,
+        error: result.error || 'Update failed',
+      };
+    }
+
+    return {
+      success: true,
+      caseStudy: result.caseStudy,
     };
   } catch (error) {
     return {

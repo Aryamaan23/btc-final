@@ -87,7 +87,12 @@ async function blobFetch(path: string, init: RequestInit = {}): Promise<Response
   return response;
 }
 
-async function blobPut(pathname: string, body: Buffer | string, contentType: string): Promise<BlobListItem> {
+async function blobPut(
+  pathname: string,
+  body: Buffer | string,
+  contentType: string,
+  options?: { allowOverwrite?: boolean }
+): Promise<BlobListItem> {
   const params = new URLSearchParams({ pathname });
   const response = await blobFetch(`/?${params.toString()}`, {
     method: 'PUT',
@@ -96,6 +101,7 @@ async function blobPut(pathname: string, body: Buffer | string, contentType: str
       'x-vercel-blob-access': blobAccess(),
       'x-content-type': contentType,
       'x-add-random-suffix': '0',
+      ...(options?.allowOverwrite ? { 'x-allow-overwrite': '1' } : {}),
     },
   });
   return (await response.json()) as BlobListItem;
@@ -196,11 +202,12 @@ async function putFile(pathname: string, data: Buffer, contentType: string) {
   return blobPut(pathname, data, contentType || 'application/octet-stream');
 }
 
-async function saveMetaToBlob(caseStudy: CaseStudyRecord) {
+async function saveMetaToBlob(caseStudy: CaseStudyRecord, allowOverwrite = false) {
   await blobPut(
     `${META_PREFIX}${caseStudy.id}.json`,
     JSON.stringify(caseStudy),
-    'application/json'
+    'application/json',
+    { allowOverwrite }
   );
 }
 
@@ -283,6 +290,51 @@ async function deleteCaseStudy(caseStudyId: string): Promise<boolean> {
   attachments.forEach((item) => inMemoryFiles.delete(item.id));
   inMemoryCaseStudies.splice(index, 1);
   return true;
+}
+
+type UpdateCaseStudyInput = {
+  caseStudyId: string;
+  title: string;
+  studentName: string;
+  program: string;
+  summary: string;
+};
+
+async function updateCaseStudyContent(input: UpdateCaseStudyInput): Promise<CaseStudyRecord | null> {
+  const title = input.title.trim();
+  const studentName = input.studentName.trim();
+  const program = input.program.trim();
+  const summary = input.summary.trim();
+
+  if (useBlobStorage()) {
+    const existing = await findStoredFromBlob(input.caseStudyId);
+    if (!existing) return null;
+
+    const updated: CaseStudyRecord = {
+      ...existing,
+      title,
+      studentName,
+      program,
+      summary,
+    };
+
+    await saveMetaToBlob(updated, true);
+    return toPublicRecord(updated);
+  }
+
+  const index = inMemoryCaseStudies.findIndex((item) => item.id === input.caseStudyId);
+  if (index === -1) return null;
+
+  const existing = inMemoryCaseStudies[index];
+  const updated: CaseStudyRecord = {
+    ...existing,
+    title,
+    studentName,
+    program,
+    summary,
+  };
+  inMemoryCaseStudies[index] = updated;
+  return toPublicRecord(updated);
 }
 
 type UploadCaseStudyInput = {
@@ -401,6 +453,14 @@ const DEFAULT_EDITOR_CREDENTIALS: EditorCredential[] = [
     passwordSalt: '2974d82c60d96087c3b4dd5bddd71a95',
     passwordHash:
       '735258d1b3312e5dabada4624c05d3179086ee797543655bfeefd132f8a9c861975b5d1fa5bf0a25b60d63a22eb5938a097817489dc248fa76dfd0e815cff6c6',
+  },
+  {
+    usernameSalt: '9afd1e50e8a27580d06f7f75dc9a0025',
+    usernameHash:
+      '4a7c16dca1232c64f1c4b33a500f58d850dbc52f73c6790983c5b6668d9ccab6d0f56a6766db0b8e0428eca53d3f012ab90d7bd9dc41088e413ba11b8d094e0a',
+    passwordSalt: '5ad5efc2766541276fdada350b235cd6',
+    passwordHash:
+      '6664dbee27bd69fdf6487324bb2fe61319ad2b6d57455b8c1b6b661bb4bcde5745c36d256bc8d33c9d8f7283bf0c756de72cc145df48fd64178ec405f43d757a',
   },
 ];
 
@@ -581,6 +641,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(404).json({ success: false, error: 'Case study not found' });
       }
       return res.status(200).json({ success: true });
+    }
+
+    if (action === 'update') {
+      const caseStudyId = String(body.caseStudyId || '').trim();
+      const title = String(body.title || '').trim();
+      const studentName = String(body.studentName || '').trim();
+      const program = String(body.program || '').trim();
+      const summary = String(body.summary || '').trim();
+
+      if (!caseStudyId) {
+        return res.status(400).json({ success: false, error: 'Missing caseStudyId for update' });
+      }
+      if (!title || !studentName || !program || !summary) {
+        return res.status(400).json({ success: false, error: 'Missing required fields for case study update' });
+      }
+      if (summary.length < 20) {
+        return res.status(400).json({ success: false, error: 'Summary should be at least 20 characters' });
+      }
+
+      const updated = await updateCaseStudyContent({
+        caseStudyId,
+        title,
+        studentName,
+        program,
+        summary,
+      });
+      if (!updated) {
+        return res.status(404).json({ success: false, error: 'Case study not found' });
+      }
+      return res.status(200).json({ success: true, caseStudy: updated });
     }
 
     if (!storageReady()) {

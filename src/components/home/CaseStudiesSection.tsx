@@ -106,6 +106,7 @@ function CaseStudiesSection({ variant = 'default' }: CaseStudiesSectionProps) {
           loadError={loadError}
           onRefresh={() => void load()}
           showDelete={canEdit}
+          showEdit={canEdit}
           onDelete={handleDeleteCaseStudy}
           deletingId={deletingId}
         />

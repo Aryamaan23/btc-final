@@ -20,6 +20,7 @@ export type PublishedCaseStudiesListProps = {
   loadError: string;
   onRefresh: () => void;
   showDelete?: boolean;
+  showEdit?: boolean;
   onDelete?: (caseStudyId: string, caseStudyTitle: string) => void;
   deletingId?: string;
 };
@@ -31,6 +32,7 @@ function PublishedCaseStudiesList({
   loadError,
   onRefresh,
   showDelete = false,
+  showEdit = false,
   onDelete,
   deletingId = '',
 }: PublishedCaseStudiesListProps) {
@@ -120,6 +122,16 @@ function PublishedCaseStudiesList({
                 >
                   Read more
                 </Button>
+                {showEdit ? (
+                  <Button
+                    size={isFeatured ? 'md' : 'sm'}
+                    variant="outline"
+                    href={`/publications/${item.id}?edit=1`}
+                    className={isFeatured ? 'min-w-[8rem]' : ''}
+                  >
+                    Edit
+                  </Button>
+                ) : null}
                 <Button
                   size={isFeatured ? 'md' : 'sm'}
                   variant="outline"
